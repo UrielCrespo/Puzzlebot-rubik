@@ -206,17 +206,11 @@ class PerceptionNode(Node):
         # Si el nodo se atrasa, descarta frames viejos en vez de
         # acumularlos. Elimina jitter de latencia en el error de línea.
         # ==========================================================
-        image_qos = QoSProfile(
-            reliability=ReliabilityPolicy.BEST_EFFORT,
-            history=HistoryPolicy.KEEP_LAST,
-            depth=1
-        )
-
         self.create_subscription(
             Image,
             '/image_raw',
             self.image_callback,
-            image_qos
+            10
         )
 
         # ==========================================================
