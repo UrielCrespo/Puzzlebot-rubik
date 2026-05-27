@@ -6,37 +6,37 @@ from launch_ros.actions import Node
 
 def generate_launch_description():
 
-    video_device = LaunchConfiguration('video_device')
-    rotate_image = LaunchConfiguration('rotate_image')
+    video_device               = LaunchConfiguration('video_device')
+    rotate_image               = LaunchConfiguration('rotate_image')
 
-    line_roi_top = LaunchConfiguration('line_roi_top')
-    trap_top_frac = LaunchConfiguration('trap_top_frac')
-    trap_bottom_frac = LaunchConfiguration('trap_bottom_frac')
+    line_roi_top               = LaunchConfiguration('line_roi_top')
+    trap_top_frac              = LaunchConfiguration('trap_top_frac')
+    trap_bottom_frac           = LaunchConfiguration('trap_bottom_frac')
 
-    traffic_roi_bottom = LaunchConfiguration('traffic_roi_bottom')
-    traffic_max_center_y_frac = LaunchConfiguration('traffic_max_center_y_frac')
-    traffic_min_center_y_frac = LaunchConfiguration('traffic_min_center_y_frac')
+    traffic_roi_bottom         = LaunchConfiguration('traffic_roi_bottom')
+    traffic_max_center_y_frac  = LaunchConfiguration('traffic_max_center_y_frac')
+    traffic_min_center_y_frac  = LaunchConfiguration('traffic_min_center_y_frac')
 
-    min_score_red = LaunchConfiguration('min_score_red')
-    min_score_yellow = LaunchConfiguration('min_score_yellow')
-    min_score_green = LaunchConfiguration('min_score_green')
+    min_score_red              = LaunchConfiguration('min_score_red')
+    min_score_yellow           = LaunchConfiguration('min_score_yellow')
+    min_score_green            = LaunchConfiguration('min_score_green')
 
     return LaunchDescription([
 
-        DeclareLaunchArgument('video_device', default_value='/dev/video2'),
-        DeclareLaunchArgument('rotate_image', default_value='False'),
+        DeclareLaunchArgument('video_device',              default_value='/dev/video2'),
+        DeclareLaunchArgument('rotate_image',              default_value='False'),
 
-        DeclareLaunchArgument('line_roi_top', default_value='0.45'),
-        DeclareLaunchArgument('trap_top_frac', default_value='0.08'),
-        DeclareLaunchArgument('trap_bottom_frac', default_value='0.65'),
+        DeclareLaunchArgument('line_roi_top',              default_value='0.45'),
+        DeclareLaunchArgument('trap_top_frac',             default_value='0.08'),
+        DeclareLaunchArgument('trap_bottom_frac',          default_value='0.65'),
 
-        DeclareLaunchArgument('traffic_roi_bottom', default_value='0.72'),
+        DeclareLaunchArgument('traffic_roi_bottom',        default_value='0.72'),
         DeclareLaunchArgument('traffic_max_center_y_frac', default_value='0.68'),
         DeclareLaunchArgument('traffic_min_center_y_frac', default_value='0.03'),
 
-        DeclareLaunchArgument('min_score_red', default_value='45.0'),
-        DeclareLaunchArgument('min_score_yellow', default_value='18.0'),
-        DeclareLaunchArgument('min_score_green', default_value='35.0'),
+        DeclareLaunchArgument('min_score_red',             default_value='45.0'),
+        DeclareLaunchArgument('min_score_yellow',          default_value='18.0'),
+        DeclareLaunchArgument('min_score_green',           default_value='35.0'),
 
         Node(
             package='usb_cam',
@@ -75,7 +75,10 @@ def generate_launch_description():
                 'trap_top_frac': trap_top_frac,
                 'trap_bottom_frac': trap_bottom_frac,
 
-                'traffic_process_fps': 10.0,
+                # Bajado de 10.0 a 5.0 — un semáforo cambia cada varios segundos,
+                # no necesita procesarse a 10 FPS. Ahorra ~10% de CPU en la Rubik.
+                'traffic_process_fps': 5.0,
+
                 'traffic_roi_bottom': traffic_roi_bottom,
                 'traffic_max_center_y_frac': traffic_max_center_y_frac,
                 'traffic_min_center_y_frac': traffic_min_center_y_frac,
