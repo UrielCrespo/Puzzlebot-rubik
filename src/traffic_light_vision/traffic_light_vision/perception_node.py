@@ -16,7 +16,6 @@ import rclpy
 
 from cv_bridge import CvBridge
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from sensor_msgs.msg import Image, CompressedImage
 from std_msgs.msg import Bool, Float32MultiArray, String
 
@@ -43,7 +42,7 @@ class PerceptionNode(Node):
         self.declare_parameter('blur_kernel', 7)
         self.declare_parameter('morph_kernel', 5)
 
-        self.declare_parameter('min_area', 400)
+        self.declare_parameter('min_area', 400) # cambio 1, de 400 a 800 (linea fantasma)
         self.declare_parameter('max_area', 100000)
         self.declare_parameter('score_distance_weight', 8.0)
 
@@ -206,6 +205,7 @@ class PerceptionNode(Node):
         # Si el nodo se atrasa, descarta frames viejos en vez de
         # acumularlos. Elimina jitter de latencia en el error de línea.
         # ==========================================================
+
         self.create_subscription(
             Image,
             '/image_raw',
