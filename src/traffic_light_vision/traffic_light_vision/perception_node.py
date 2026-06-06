@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 
 from collections import deque
 
@@ -38,41 +39,58 @@ class PerceptionNode(Node):
         self.declare_parameter('max_area', 100000)
         self.declare_parameter('score_distance_weight', 8.0)
 
-        self.declare_parameter('lookahead_row', 0.25)
-        self.declare_parameter('lost_timeout', 1.95)
+        self.declare_parameter('lookahead_row', 0.55) #Anterior 0.25
+        self.declare_parameter('lost_timeout', 3.00)
 
-        self.declare_parameter('trap_top_frac', 0.08)
+        self.declare_parameter('trap_top_frac', 0.30) #anterior 0.10
         self.declare_parameter('trap_bottom_frac', 0.65)
+
+        # Controls how high the triangular/trapezoid mask starts inside the
+        # line ROI. IMPORTANT: this is applied after rh/rw exist.
+        self.declare_parameter('trap_top_row_frac', 0.45)
 
         # ==========================================================
         # Traffic light parameters
         # ==========================================================
-        self.declare_parameter('traffic_process_fps', 10.0)
+        self.declare_parameter('traffic_process_fps', 12.0)
 
-        # Semaforo search zone:
-        # 0.72 means ignore the lowest 28% of image for traffic detection.
-        # This helps reject floor reflections.
+        # Top-right ROI. Default: right-most upper zone.
+        # X = 0.75 to 1.00, Y = 0.00 to 0.50.
+        self.declare_parameter('traffic_roi_x_min_frac', 0.75)
+        self.declare_parameter('traffic_roi_x_max_frac', 1.00)
+        self.declare_parameter('traffic_roi_y_min_frac', 0.00)
+        self.declare_parameter('traffic_roi_y_max_frac', 0.50)
+
+        # Kept for compatibility with older launch files. In this version,
+        # traffic_roi_y_max_frac is the parameter that defines the traffic ROI.
         self.declare_parameter('traffic_roi_bottom', 0.72)
 
-        # Extra reflection rejection:
-        # candidate center cannot be too low in the image.
-        self.declare_parameter('traffic_max_center_y_frac', 0.68)
-        self.declare_parameter('traffic_min_center_y_frac', 0.03)
+        # Candidate validation in GLOBAL frame coordinates.
+        self.declare_parameter('traffic_min_center_x_frac', 0.75)
+        self.declare_parameter('traffic_max_center_x_frac', 1.00)
+        self.declare_parameter('traffic_min_center_y_frac', 0.00)
+        self.declare_parameter('traffic_max_center_y_frac', 0.52)
 
-        # Minimum scores after improved scoring.
-        # Yellow is intentionally lower because it is weaker in your lamp.
-        self.declare_parameter('min_score_red', 45.0)
-        self.declare_parameter('min_score_yellow', 18.0)
-        self.declare_parameter('min_score_green', 35.0)
+        # Minimum detection scores.
+        self.declare_parameter('min_score_red', 55.0)
+        self.declare_parameter('min_score_yellow', 28.0)
+        self.declare_parameter('min_score_green', 45.0)
+
+        # Brightness focus: rejects colored classroom objects that are not active LEDs.
+        self.declare_parameter('traffic_bright_percentile', 92.0)
+        self.declare_parameter('traffic_min_v_floor', 95.0)
+        self.declare_parameter('traffic_min_candidate_mean_v', 105.0)
+        self.declare_parameter('traffic_min_candidate_peak_v', 145.0)
+        self.declare_parameter('traffic_min_candidate_bright_ratio', 0.20)
 
         # Blob filtering
         self.declare_parameter('traffic_min_area', 12.0)
-        self.declare_parameter('traffic_max_area', 6000.0)
-        self.declare_parameter('traffic_min_circularity', 0.10)
-        self.declare_parameter('traffic_min_fill_ratio', 0.12)
+        self.declare_parameter('traffic_max_area', 3500.0)
+        self.declare_parameter('traffic_min_circularity', 0.12)
+        self.declare_parameter('traffic_min_fill_ratio', 0.14)
         self.declare_parameter('traffic_max_aspect_ratio', 3.2)
 
-        # Dynamic ROI
+        # Tracking/lost state for temporal logic.
         self.declare_parameter('roi_margin', 180)
         self.declare_parameter('max_lost_frames', 12)
 
@@ -91,6 +109,8 @@ class PerceptionNode(Node):
         self.declare_parameter('debug_fps', 5.0)
         self.declare_parameter('debug_jpeg_quality', 45)
 
+        self.debug_enabled = bool(self.get_parameter('debug').value)
+
         # ==========================================================
         # Publishers
         # ==========================================================
@@ -106,12 +126,6 @@ class PerceptionNode(Node):
             10
         )
 
-        self.line_debug_pub = self.create_publisher(
-            CompressedImage,
-            '/perception/debug/compressed',
-            10
-        )
-
         self.traffic_state_pub = self.create_publisher(
             String,
             '/traffic_light_state',
@@ -124,11 +138,23 @@ class PerceptionNode(Node):
             10
         )
 
-        self.traffic_debug_pub = self.create_publisher(
-            CompressedImage,
-            '/traffic_debug/compressed',
-            10
-        )
+        # Only create debug topics when debug is enabled. This prevents debug
+        # topics from appearing in nodebug mode and avoids unnecessary overhead.
+        self.line_debug_pub = None
+        self.traffic_debug_pub = None
+
+        if self.debug_enabled:
+            self.line_debug_pub = self.create_publisher(
+                CompressedImage,
+                '/perception/debug/compressed',
+                10
+            )
+
+            self.traffic_debug_pub = self.create_publisher(
+                CompressedImage,
+                '/traffic_debug/compressed',
+                10
+            )
 
         # ==========================================================
         # Subscriber
@@ -170,6 +196,7 @@ class PerceptionNode(Node):
 
         self.latest_traffic_debug = None
         self.last_traffic_process_time = self.get_clock().now()
+        self.current_traffic_vthr = 110.0
 
         # ==========================================================
         # Debug timing
@@ -178,7 +205,7 @@ class PerceptionNode(Node):
         self.last_traffic_log = ''
 
         self.get_logger().info(
-            'PerceptionNode started: improved traffic detection + line detection'
+            'PerceptionNode started: line detection + bright TOP-RIGHT traffic ROI'
         )
 
     # ==============================================================
@@ -190,6 +217,9 @@ class PerceptionNode(Node):
         return (now - past_time).nanoseconds / 1e9
 
     def publish_compressed(self, publisher, image_bgr):
+        if publisher is None or image_bgr is None:
+            return
+
         quality = int(self.get_parameter('debug_jpeg_quality').value)
 
         ret, buffer = cv2.imencode(
@@ -207,6 +237,9 @@ class PerceptionNode(Node):
         msg.data = buffer.tobytes()
         publisher.publish(msg)
 
+    def clamp_frac(self, value, low=0.0, high=1.0):
+        return max(low, min(high, float(value)))
+
     # ==============================================================
     # Line pipeline
     # ==============================================================
@@ -222,6 +255,7 @@ class PerceptionNode(Node):
 
         top_frac = float(self.get_parameter('trap_top_frac').value)
         bottom_frac = float(self.get_parameter('trap_bottom_frac').value)
+        top_row_frac = float(self.get_parameter('trap_top_row_frac').value)
 
         if blur_k % 2 == 0:
             blur_k += 1
@@ -238,6 +272,11 @@ class PerceptionNode(Node):
         roi_gray = gray[roi_y:h, :]
 
         rh, rw = roi_gray.shape[:2]
+
+        # BUG FIX:
+        # rh/rw must exist before using trap_top_row_frac.
+        top_row_frac = float(np.clip(top_row_frac, 0.0, 0.95))
+        top_row = int(rh * top_row_frac)
 
         blurred = cv2.GaussianBlur(roi_gray, (blur_k, blur_k), 0)
 
@@ -266,8 +305,8 @@ class PerceptionNode(Node):
         bot_x2 = bot_x1 + bot_w
 
         polygon = np.array([
-            [top_x1, 0],
-            [top_x2, 0],
+            [top_x1, top_row],
+            [top_x2, top_row],
             [bot_x2, rh - 1],
             [bot_x1, rh - 1],
         ], dtype=np.int32)
@@ -490,7 +529,7 @@ class PerceptionNode(Node):
         return vis
 
     # ==============================================================
-    # Improved traffic light pipeline
+    # TOP-RIGHT traffic light pipeline
     # ==============================================================
 
     def clean_mask(self, mask):
@@ -499,58 +538,79 @@ class PerceptionNode(Node):
         mask = cv2.dilate(mask, self.kernel_morph, iterations=2)
         return mask
 
+    def get_traffic_roi_bounds(self, frame):
+        h, w = frame.shape[:2]
+
+        x_min_frac = self.clamp_frac(
+            self.get_parameter('traffic_roi_x_min_frac').value
+        )
+        x_max_frac = self.clamp_frac(
+            self.get_parameter('traffic_roi_x_max_frac').value
+        )
+        y_min_frac = self.clamp_frac(
+            self.get_parameter('traffic_roi_y_min_frac').value
+        )
+        y_max_frac = self.clamp_frac(
+            self.get_parameter('traffic_roi_y_max_frac').value
+        )
+
+        # Safety normalization in case launch sends inverted values.
+        if x_max_frac <= x_min_frac:
+            x_min_frac, x_max_frac = 0.75, 1.00
+
+        if y_max_frac <= y_min_frac:
+            y_min_frac, y_max_frac = 0.00, 0.50
+
+        x1 = int(w * x_min_frac)
+        x2 = int(w * x_max_frac)
+        y1 = int(h * y_min_frac)
+        y2 = int(h * y_max_frac)
+
+        x1 = int(np.clip(x1, 0, w - 1))
+        x2 = int(np.clip(x2, x1 + 1, w))
+        y1 = int(np.clip(y1, 0, h - 1))
+        y2 = int(np.clip(y2, y1 + 1, h))
+
+        return x1, y1, x2, y2
+
     def get_dynamic_traffic_roi(self, frame):
+        # Name kept for compatibility with older code.
+        # This version returns ONLY the selected top-right traffic ROI.
         self.traffic_frame_count += 1
 
-        h, w, _ = frame.shape
-        traffic_roi_bottom = float(self.get_parameter('traffic_roi_bottom').value)
-        base_y2 = int(h * traffic_roi_bottom)
-
-        if (
-            not self.tracking
-            or self.last_bbox is None
-            or self.traffic_frame_count % 8 == 0
-        ):
-            return frame[0:base_y2, :], 0, 0, True
-
-        x, y, bw, bh = self.last_bbox
-        margin = int(self.get_parameter('roi_margin').value)
-
-        x1 = max(0, x - margin)
-        y1 = max(0, y - margin)
-        x2 = min(w, x + bw + margin)
-        y2 = min(base_y2, y + bh + margin)
-
-        if x2 <= x1 or y2 <= y1:
-            return frame[0:base_y2, :], 0, 0, True
-
+        x1, y1, x2, y2 = self.get_traffic_roi_bounds(frame)
         roi = frame[y1:y2, x1:x2]
-        return roi, x1, y1, False
+
+        return roi, x1, y1, True
 
     def make_color_masks(self, roi):
         hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
 
-        h = hsv[:, :, 0]
-        s = hsv[:, :, 1]
         v = hsv[:, :, 2]
 
-        # Adaptive brightness floor.
-        # This helps when room light changes.
+        # Adaptive brightness floor calculated ONLY inside traffic ROI.
+        # Percentile focuses detection on bright LED-like pixels.
         v_mean = float(np.mean(v))
         v_std = float(np.std(v))
-        adaptive_v = int(np.clip(v_mean + 0.55 * v_std, 65, 155))
+        bright_percentile = float(self.get_parameter('traffic_bright_percentile').value)
+        min_v_floor = float(self.get_parameter('traffic_min_v_floor').value)
+        v_perc = float(np.percentile(v, bright_percentile))
 
-        # Color masks.
-        # Wider yellow range because the lamp appears orange/white in camera.
+        adaptive_v = int(np.clip(
+            max(min_v_floor, v_mean + 0.65 * v_std, v_perc - 4.0),
+            70,
+            210
+        ))
+
         red_mask_1 = cv2.inRange(
             hsv,
-            np.array([0, 55, 80]),
-            np.array([13, 255, 255])
+            np.array([0, 50, 70]),
+            np.array([14, 255, 255])
         )
 
         red_mask_2 = cv2.inRange(
             hsv,
-            np.array([166, 55, 80]),
+            np.array([166, 50, 70]),
             np.array([179, 255, 255])
         )
 
@@ -558,25 +618,24 @@ class PerceptionNode(Node):
 
         yellow_mask = cv2.inRange(
             hsv,
-            np.array([10, 35, 70]),
-            np.array([45, 255, 255])
+            np.array([10, 32, 70]),
+            np.array([47, 255, 255])
         )
 
         green_mask = cv2.inRange(
             hsv,
-            np.array([38, 35, 65]),
-            np.array([105, 255, 255])
+            np.array([38, 32, 65]),
+            np.array([108, 255, 255])
         )
 
-        # Bright core / active light filter.
-        # Do not require too much saturation because LED center can become white.
+        # Main classroom-noise rejection step:
+        # color must also be bright enough to look like an active LED.
         bright_mask = cv2.inRange(
             hsv,
             np.array([0, 0, adaptive_v]),
             np.array([179, 255, 255])
         )
 
-        # Strong color regions OR bright colored halo.
         red_mask = cv2.bitwise_and(red_mask, bright_mask)
         yellow_mask = cv2.bitwise_and(yellow_mask, bright_mask)
         green_mask = cv2.bitwise_and(green_mask, bright_mask)
@@ -585,9 +644,11 @@ class PerceptionNode(Node):
         yellow_mask = self.clean_mask(yellow_mask)
         green_mask = self.clean_mask(green_mask)
 
+        self.current_traffic_vthr = adaptive_v
+
         return hsv, red_mask, yellow_mask, green_mask, adaptive_v
 
-    def evaluate_blob(self, contour, mask, hsv, label, offset_x, offset_y, frame_h):
+    def evaluate_blob(self, contour, mask, hsv, label, offset_x, offset_y, frame_h, frame_w):
         area = cv2.contourArea(contour)
 
         min_area = float(self.get_parameter('traffic_min_area').value)
@@ -627,16 +688,24 @@ class PerceptionNode(Node):
         cx = x + w / 2.0
         cy = y + h / 2.0
 
+        global_cx = cx + offset_x
         global_cy = cy + offset_y
 
         min_y_frac = float(self.get_parameter('traffic_min_center_y_frac').value)
         max_y_frac = float(self.get_parameter('traffic_max_center_y_frac').value)
+        min_x_frac = float(self.get_parameter('traffic_min_center_x_frac').value)
+        max_x_frac = float(self.get_parameter('traffic_max_center_x_frac').value)
 
-        # Reject objects too low. This removes floor reflections.
         if global_cy < frame_h * min_y_frac:
             return None
 
         if global_cy > frame_h * max_y_frac:
+            return None
+
+        if global_cx < frame_w * min_x_frac:
+            return None
+
+        if global_cx > frame_w * max_x_frac:
             return None
 
         blob_mask = np.zeros(mask.shape, dtype=np.uint8)
@@ -648,17 +717,33 @@ class PerceptionNode(Node):
         mean_v = cv2.mean(v_channel, mask=blob_mask)[0]
         mean_s = cv2.mean(s_channel, mask=blob_mask)[0]
 
-        # Score:
-        # - area helps stability
-        # - brightness helps active lamp
-        # - saturation helps real color
-        # - circularity/fill reject reflections and line artifacts
+        blob_pixels = v_channel[blob_mask > 0]
+        if blob_pixels.size == 0:
+            return None
+
+        peak_v = float(np.max(blob_pixels))
+        vthr = float(getattr(self, 'current_traffic_vthr', 110.0))
+        bright_ratio = float(np.count_nonzero(blob_pixels >= vthr)) / float(blob_pixels.size)
+
+        min_mean_v = float(self.get_parameter('traffic_min_candidate_mean_v').value)
+        min_peak_v = float(self.get_parameter('traffic_min_candidate_peak_v').value)
+        min_bright_ratio = float(self.get_parameter('traffic_min_candidate_bright_ratio').value)
+
+        # Reject colored but non-bright objects such as tables, bags, posters, etc.
+        if mean_v < min_mean_v and peak_v < min_peak_v:
+            return None
+
+        if bright_ratio < min_bright_ratio:
+            return None
+
         score = (
             np.sqrt(area)
-            * (mean_v / 255.0) ** 1.8
-            * (0.45 + 0.55 * (mean_s / 255.0))
+            * (mean_v / 255.0) ** 2.2
+            * (peak_v / 255.0) ** 1.2
+            * (0.35 + 0.65 * (mean_s / 255.0))
             * (0.55 + 0.45 * circularity)
             * (0.60 + 0.40 * fill_ratio)
+            * (0.55 + 0.45 * bright_ratio)
             * 100.0
         )
 
@@ -669,13 +754,15 @@ class PerceptionNode(Node):
             'area': area,
             'mean_v': mean_v,
             'mean_s': mean_s,
+            'peak_v': peak_v,
+            'bright_ratio': bright_ratio,
             'circularity': circularity,
             'fill_ratio': fill_ratio,
             'score': score,
-            'center': (cx + offset_x, cy + offset_y),
+            'center': (global_cx, global_cy),
         }
 
-    def best_color_candidate(self, mask, hsv, label, offset_x, offset_y, frame_h):
+    def best_color_candidate(self, mask, hsv, label, offset_x, offset_y, frame_h, frame_w):
         contours, _ = cv2.findContours(
             mask,
             cv2.RETR_EXTERNAL,
@@ -693,7 +780,8 @@ class PerceptionNode(Node):
                 label=label,
                 offset_x=offset_x,
                 offset_y=offset_y,
-                frame_h=frame_h
+                frame_h=frame_h,
+                frame_w=frame_w
             )
 
             if candidate is None:
@@ -754,7 +842,6 @@ class PerceptionNode(Node):
         green_votes = int(self.get_parameter('green_votes_required').value)
         unknown_votes = int(self.get_parameter('unknown_votes_required').value)
 
-        # RED has highest priority for safety.
         if red_count >= red_votes:
             self.final_state = 'RED'
         elif yellow_count >= yellow_votes:
@@ -793,7 +880,7 @@ class PerceptionNode(Node):
     def process_traffic(self, frame):
         roi, offset_x, offset_y, full_mode = self.get_dynamic_traffic_roi(frame)
 
-        frame_h = frame.shape[0]
+        frame_h, frame_w = frame.shape[:2]
 
         hsv, red_mask, yellow_mask, green_mask, adaptive_v = self.make_color_masks(roi)
 
@@ -803,7 +890,8 @@ class PerceptionNode(Node):
             'RED',
             offset_x,
             offset_y,
-            frame_h
+            frame_h,
+            frame_w
         )
 
         yellow_best, yellow_candidates = self.best_color_candidate(
@@ -812,7 +900,8 @@ class PerceptionNode(Node):
             'YELLOW',
             offset_x,
             offset_y,
-            frame_h
+            frame_h,
+            frame_w
         )
 
         green_best, green_candidates = self.best_color_candidate(
@@ -821,7 +910,8 @@ class PerceptionNode(Node):
             'GREEN',
             offset_x,
             offset_y,
-            frame_h
+            frame_h,
+            frame_w
         )
 
         detected, best_candidate = self.choose_traffic_detection(
@@ -890,7 +980,7 @@ class PerceptionNode(Node):
         g_score = 0 if green_best is None else int(green_best['score'])
 
         log = (
-            f'TRAFFIC raw={detected} stable={stable_state} action={action} | '
+            f'TRAFFIC RIGHT_ROI raw={detected} stable={stable_state} action={action} | '
             f'R={r_score} Y={y_score} G={g_score} | '
             f'tracking={self.tracking} lost={self.lost_count} Vthr={adaptive_v}'
         )
@@ -929,37 +1019,40 @@ class PerceptionNode(Node):
         vis = frame.copy()
         h, w = vis.shape[:2]
 
-        traffic_roi_bottom = float(self.get_parameter('traffic_roi_bottom').value)
-        max_y_frac = float(self.get_parameter('traffic_max_center_y_frac').value)
+        x1, y1, x2, y2 = self.get_traffic_roi_bounds(frame)
 
-        base_y2 = int(h * traffic_roi_bottom)
-        max_center_y = int(h * max_y_frac)
+        # Make selected ROI obvious: darken everything else.
+        dark = (vis * 0.35).astype(np.uint8)
+        dark[y1:y2, x1:x2] = vis[y1:y2, x1:x2]
+        vis = dark
 
-        # Traffic ROI region
-        cv2.rectangle(vis, (0, 0), (w - 1, base_y2), (255, 180, 0), 2)
-        cv2.line(vis, (0, base_y2), (w, base_y2), (255, 180, 0), 2)
+        # Draw 4 quadrants.
+        mid_x = w // 2
+        mid_y = h // 2
+        cv2.line(vis, (mid_x, 0), (mid_x, h), (255, 255, 255), 1)
+        cv2.line(vis, (0, mid_y), (w, mid_y), (255, 255, 255), 1)
 
-        # Reflection rejection line
-        cv2.line(vis, (0, max_center_y), (w, max_center_y), (255, 0, 255), 2)
+        # Highlight traffic ROI.
+        cv2.rectangle(vis, (x1, y1), (x2 - 1, y2 - 1), (0, 255, 0), 3)
 
         cv2.putText(
             vis,
-            'Traffic ROI',
-            (10, 24),
+            'ACTIVE TRAFFIC ROI: RIGHT-TOP ZONE',
+            (x1 + 8, y1 + 26),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.50,
-            (255, 180, 0),
+            0.48,
+            (0, 255, 0),
             2,
             cv2.LINE_AA
         )
 
         cv2.putText(
             vis,
-            'reflection reject line',
-            (10, max(45, max_center_y - 8)),
+            f'x:{x1}-{x2} y:{y1}-{y2}',
+            (x1 + 8, y1 + 48),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.45,
-            (255, 0, 255),
+            0.42,
+            (0, 255, 0),
             1,
             cv2.LINE_AA
         )
@@ -981,12 +1074,10 @@ class PerceptionNode(Node):
         red_count, yellow_count, green_count, unknown_count = data['counts']
         adaptive_v = data['adaptive_v']
 
-        # Draw best candidates for each color
         self.draw_candidate(vis, red_best, (0, 0, 255), 1)
         self.draw_candidate(vis, yellow_best, (0, 255, 255), 1)
         self.draw_candidate(vis, green_best, (0, 255, 0), 1)
 
-        # Draw final best candidate thicker
         if best_candidate is not None:
             self.draw_candidate(
                 vis,
@@ -1001,15 +1092,15 @@ class PerceptionNode(Node):
 
         panel_color = self.color_for_state(stable_state)
 
-        # Compact panel
-        cv2.rectangle(vis, (8, 42), (315, 142), (0, 0, 0), -1)
-        cv2.rectangle(vis, (8, 42), (315, 142), panel_color, 2)
+        cv2.rectangle(vis, (8, 42), (335, 164), (0, 0, 0), -1)
+        cv2.rectangle(vis, (8, 42), (335, 164), panel_color, 2)
 
         lines = [
             f'{stable_state} | {action}',
             f'raw:{detected} Vthr:{adaptive_v}',
             f'Score R:{r_score} Y:{y_score} G:{g_score}',
             f'Buf R:{red_count} Y:{yellow_count} G:{green_count} U:{unknown_count}',
+            f'ROI x:{x1}-{x2} y:{y1}-{y2}',
         ]
 
         y0 = 62
@@ -1020,9 +1111,9 @@ class PerceptionNode(Node):
             cv2.putText(
                 vis,
                 text,
-                (16, y0 + i * 22),
+                (16, y0 + i * 20),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.43,
+                0.40,
                 color,
                 1,
                 cv2.LINE_AA
@@ -1071,19 +1162,20 @@ class PerceptionNode(Node):
 
         self.publish_line(line_detected, error_main, error_look)
 
-        self.latest_line_debug = self.create_line_debug(
-            roi_gray=roi_gray,
-            polygon=polygon,
-            best_label=best_label,
-            stats=stats,
-            cx_main=cx_main,
-            cx_look=cx_look,
-            cy_main=cy_main,
-            image_width=line_width,
-            line_detected=line_detected,
-            error_main=error_main,
-            error_look=error_look
-        )
+        if self.debug_enabled:
+            self.latest_line_debug = self.create_line_debug(
+                roi_gray=roi_gray,
+                polygon=polygon,
+                best_label=best_label,
+                stats=stats,
+                cx_main=cx_main,
+                cx_look=cx_look,
+                cy_main=cy_main,
+                image_width=line_width,
+                line_detected=line_detected,
+                error_main=error_main,
+                error_look=error_look
+            )
 
         # Traffic processing throttled
         traffic_fps = float(self.get_parameter('traffic_process_fps').value)
@@ -1094,11 +1186,10 @@ class PerceptionNode(Node):
             self.process_traffic(frame)
 
         # Debug processing throttled
-        debug_enabled = bool(self.get_parameter('debug').value)
         debug_fps = float(self.get_parameter('debug_fps').value)
         debug_period = 1.0 / debug_fps if debug_fps > 0 else 0.2
 
-        if debug_enabled and self.seconds_since(self.last_debug_time) >= debug_period:
+        if self.debug_enabled and self.seconds_since(self.last_debug_time) >= debug_period:
             self.last_debug_time = self.get_clock().now()
 
             if self.latest_line_debug is not None:

@@ -7,7 +7,7 @@ from launch_ros.actions import Node
 def generate_launch_description():
 
     # ==========================================================
-    # Launch arguments
+    # Launch configurations
     # ==========================================================
 
     video_device = LaunchConfiguration('video_device')
@@ -15,12 +15,20 @@ def generate_launch_description():
     rotate_image = LaunchConfiguration('rotate_image')
 
     line_roi_top = LaunchConfiguration('line_roi_top')
+    lookahead_row = LaunchConfiguration('lookahead_row')
     trap_top_frac = LaunchConfiguration('trap_top_frac')
     trap_bottom_frac = LaunchConfiguration('trap_bottom_frac')
+    trap_top_row_frac = LaunchConfiguration('trap_top_row_frac')
 
-    traffic_roi_bottom = LaunchConfiguration('traffic_roi_bottom')
-    traffic_max_center_y_frac = LaunchConfiguration('traffic_max_center_y_frac')
+    traffic_roi_x_min_frac = LaunchConfiguration('traffic_roi_x_min_frac')
+    traffic_roi_x_max_frac = LaunchConfiguration('traffic_roi_x_max_frac')
+    traffic_roi_y_min_frac = LaunchConfiguration('traffic_roi_y_min_frac')
+    traffic_roi_y_max_frac = LaunchConfiguration('traffic_roi_y_max_frac')
+
+    traffic_min_center_x_frac = LaunchConfiguration('traffic_min_center_x_frac')
+    traffic_max_center_x_frac = LaunchConfiguration('traffic_max_center_x_frac')
     traffic_min_center_y_frac = LaunchConfiguration('traffic_min_center_y_frac')
+    traffic_max_center_y_frac = LaunchConfiguration('traffic_max_center_y_frac')
 
     min_score_red = LaunchConfiguration('min_score_red')
     min_score_yellow = LaunchConfiguration('min_score_yellow')
@@ -33,13 +41,13 @@ def generate_launch_description():
     return LaunchDescription([
 
         # ------------------------------------------------------
-        # Camera parameters
+        # General arguments
         # ------------------------------------------------------
 
         DeclareLaunchArgument(
             'video_device',
             default_value='/dev/video2',
-            description='Logitech C920 video device'
+            description='Logitech camera video device'
         ),
 
         DeclareLaunchArgument(
@@ -51,11 +59,11 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'rotate_image',
             default_value='False',
-            description='Rotate image 180 degrees if camera is mounted upside down'
+            description='Rotate image 180 degrees if needed'
         ),
 
         # ------------------------------------------------------
-        # Line detector parameters
+        # Line detector arguments
         # ------------------------------------------------------
 
         DeclareLaunchArgument(
@@ -65,55 +73,98 @@ def generate_launch_description():
         ),
 
         DeclareLaunchArgument(
+            'lookahead_row',
+            default_value='0.55',
+            description='Lookahead row inside line ROI. Higher value moves orange line down'
+        ),
+
+        DeclareLaunchArgument(
             'trap_top_frac',
-            default_value='0.08',
-            description='Top width fraction of the triangular line mask'
+            default_value='0.30',
+            description='Top width fraction of the trapezoid mask'
         ),
 
         DeclareLaunchArgument(
             'trap_bottom_frac',
             default_value='0.65',
-            description='Bottom width fraction of the triangular line mask'
-        ),
-
-        # ------------------------------------------------------
-        # Traffic light detector parameters
-        # ------------------------------------------------------
-
-        DeclareLaunchArgument(
-            'traffic_roi_bottom',
-            default_value='0.72',
-            description='Bottom limit of the traffic light search ROI'
+            description='Bottom width fraction of the trapezoid mask'
         ),
 
         DeclareLaunchArgument(
-            'traffic_max_center_y_frac',
-            default_value='0.68',
-            description='Maximum valid candidate center height; rejects floor reflections'
+            'trap_top_row_frac',
+            default_value='0.45',
+            description='Vertical start of the trapezoid inside the line ROI'
+        ),
+
+        # ------------------------------------------------------
+        # Traffic light ROI arguments
+        # ------------------------------------------------------
+
+        DeclareLaunchArgument(
+            'traffic_roi_x_min_frac',
+            default_value='0.75',
+            description='Traffic ROI left boundary as image fraction'
+        ),
+
+        DeclareLaunchArgument(
+            'traffic_roi_x_max_frac',
+            default_value='1.00',
+            description='Traffic ROI right boundary as image fraction'
+        ),
+
+        DeclareLaunchArgument(
+            'traffic_roi_y_min_frac',
+            default_value='0.00',
+            description='Traffic ROI top boundary as image fraction'
+        ),
+
+        DeclareLaunchArgument(
+            'traffic_roi_y_max_frac',
+            default_value='0.50',
+            description='Traffic ROI bottom boundary as image fraction'
+        ),
+
+        DeclareLaunchArgument(
+            'traffic_min_center_x_frac',
+            default_value='0.75',
+            description='Minimum valid traffic candidate x center'
+        ),
+
+        DeclareLaunchArgument(
+            'traffic_max_center_x_frac',
+            default_value='1.00',
+            description='Maximum valid traffic candidate x center'
         ),
 
         DeclareLaunchArgument(
             'traffic_min_center_y_frac',
-            default_value='0.03',
-            description='Minimum valid candidate center height'
+            default_value='0.00',
+            description='Minimum valid traffic candidate y center'
         ),
 
         DeclareLaunchArgument(
+            'traffic_max_center_y_frac',
+            default_value='0.52',
+            description='Maximum valid traffic candidate y center'
+        ),
+
+        # ------------------------------------------------------
+        # Traffic score arguments
+        # ------------------------------------------------------
+
+        DeclareLaunchArgument(
             'min_score_red',
-            default_value='45.0',
-            description='Minimum score required to accept RED'
+            default_value='55.0'
         ),
 
         DeclareLaunchArgument(
             'min_score_yellow',
-            default_value='18.0',
-            description='Minimum score required to accept YELLOW'
+            default_value='28.0'
         ),
 
         DeclareLaunchArgument(
             'min_score_green',
-            default_value='35.0',
-            description='Minimum score required to accept GREEN'
+            default_value='45.0'
         ),
 
         # ------------------------------------------------------
@@ -158,37 +209,55 @@ def generate_launch_description():
                 'morph_kernel': 5,
                 'min_area': 400,
                 'max_area': 100000,
-                'score_distance_weight': 8.0,
-                'lookahead_row': 0.25,
+                'score_distance_weight': 12.0,
+                'lookahead_row': lookahead_row,
                 'lost_timeout': 1.95,
                 'trap_top_frac': trap_top_frac,
                 'trap_bottom_frac': trap_bottom_frac,
+                'trap_top_row_frac': trap_top_row_frac,
 
                 # Traffic light processing
-                'traffic_process_fps': 10.0,
-                'traffic_roi_bottom': traffic_roi_bottom,
+                'traffic_process_fps': 12.0,
 
-                # Reflection rejection
-                'traffic_max_center_y_frac': traffic_max_center_y_frac,
+                # Traffic ROI
+                'traffic_roi_x_min_frac': traffic_roi_x_min_frac,
+                'traffic_roi_x_max_frac': traffic_roi_x_max_frac,
+                'traffic_roi_y_min_frac': traffic_roi_y_min_frac,
+                'traffic_roi_y_max_frac': traffic_roi_y_max_frac,
+
+                # Kept for compatibility
+                'traffic_roi_bottom': 0.72,
+
+                # Candidate validation
+                'traffic_min_center_x_frac': traffic_min_center_x_frac,
+                'traffic_max_center_x_frac': traffic_max_center_x_frac,
                 'traffic_min_center_y_frac': traffic_min_center_y_frac,
+                'traffic_max_center_y_frac': traffic_max_center_y_frac,
 
                 # Traffic scores
                 'min_score_red': min_score_red,
                 'min_score_yellow': min_score_yellow,
                 'min_score_green': min_score_green,
 
-                # Traffic blob filtering
+                # Brightness filtering
+                'traffic_bright_percentile': 92.0,
+                'traffic_min_v_floor': 95.0,
+                'traffic_min_candidate_mean_v': 105.0,
+                'traffic_min_candidate_peak_v': 145.0,
+                'traffic_min_candidate_bright_ratio': 0.20,
+
+                # Blob filtering
                 'traffic_min_area': 12.0,
-                'traffic_max_area': 6000.0,
-                'traffic_min_circularity': 0.10,
-                'traffic_min_fill_ratio': 0.12,
+                'traffic_max_area': 3500.0,
+                'traffic_min_circularity': 0.12,
+                'traffic_min_fill_ratio': 0.14,
                 'traffic_max_aspect_ratio': 3.2,
 
-                # Dynamic ROI / tracking
+                # Tracking / temporal state
                 'roi_margin': 180,
                 'max_lost_frames': 12,
 
-                # Anti-flicker / temporal filter
+                # Anti-flicker
                 'yellow_hold_max': 16,
                 'traffic_buffer_size': 10,
                 'red_votes_required': 2,
@@ -204,8 +273,7 @@ def generate_launch_description():
 
         # ------------------------------------------------------
         # Debug republisher
-        # Converts compressed debug images to raw images so
-        # rqt_image_view can display them easily.
+        # Converts compressed debug images to raw images for rqt_image_view.
         # ------------------------------------------------------
 
         Node(
@@ -213,5 +281,12 @@ def generate_launch_description():
             executable='debug_republisher',
             name='debug_republisher',
             output='screen'
+        ),
+
+	Node(
+            package='SignalDetector',
+            executable='detector_node',
+            name='detector_senales',
+            output='screen',
         ),
     ])
